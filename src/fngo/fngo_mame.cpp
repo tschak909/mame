@@ -1203,6 +1203,9 @@ int fngo_mame_wp_list(fngo_mame *m, fngo_mame_wp *out, int max)
 	cpu_device *cpu = main_cpu(m);
 	if (!cpu || !have_debugger(m))
 		return 0;
+	// MAME makes a space's watchpoint list with its first watchpoint
+	if (AS_PROGRAM >= cpu->debug()->watchpoint_space_count())
+		return 0;
 	int n = 0;
 	for (auto const &wp : cpu->debug()->watchpoint_vector(AS_PROGRAM))
 	{
