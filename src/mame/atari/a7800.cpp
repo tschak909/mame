@@ -256,20 +256,23 @@ void a7800_state::riot_button_pullup_w(uint8_t data)
 }
 
 // The XG-1 light gun. The game races the beam, polling the gun's photodiode
-// on INPT4/INPT5 (low while it sees light) to learn where it points. The aim
-// is in frame pixels (the visible area's top left is 0,0). The diode and the
-// polling see the beam late; this places the sensing point as the A7800
-// emulator (a MAME derivative, BSD-3-Clause) calibrated it against the light
-// gun games: 95 half color clocks to the right, wrapped within the line, and
-// a vertical scale of 228/243 (NTSC) or 260/293 (PAL) from line 16, and the
-// sensor answers within 8 units (half clocks, lines) of that point.
+// on INPT4/INPT5 (low while it sees light) and counting cycles and lines to
+// learn where it points. The aim is in frame pixels (the visible area's top
+// left is 0,0). MAME draws a line's pixels when the line starts, so the beam
+// the game races passes frame pixel x at hpos x + the horizontal blank, and
+// the diode and the polling loop see it late; the sensing point below is
+// measured against the games' own hit tests -- Barnyard Blaster's bullet
+// holes land on the aim within a few pixels, and Meltdown's passkey arrows
+// and START button answer exactly where they are drawn -- 208 color clocks
+// to the right (wrapped within the line) and 10 lines up (12 on a PAL
+// console). The sensor answers within 8 units (half clocks, lines) of it.
 bool a7800_state::lightgun_sees_beam(int port)
 {
 	int const aim_x = m_io_lightgun[port * 2]->read();
 	int const aim_y = m_io_lightgun[port * 2 + 1]->read() + m_screen->visible_area().top();
 
-	int const sense_x = (aim_x / 2 + 95) % 227;
-	int const sense_y = m_ispal ? 24 + (aim_y - 16) * 260 / 293 : 16 + (aim_y - 16) * 228 / 243;
+	int const sense_x = ((aim_x + 208) / 2) % 227;
+	int const sense_y = aim_y - (m_ispal ? 12 : 10);
 
 	int const dx = m_screen->hpos() / 2 - sense_x;
 	int const dy = (m_screen->vpos() % m_lines) - sense_y;

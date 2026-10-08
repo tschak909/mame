@@ -37,6 +37,7 @@
 #include "ui/uimain.h"
 #include "video.h"
 
+#include "corefile.h"
 #include "corestr.h"
 #include "unzip.h"
 
@@ -180,6 +181,11 @@ struct fngo_mame : public fngo_osd_host
 
 		if (cb.service)
 			cb.service(cb.user);
+		// The host may have let the machine go (a step, "go", run to ...);
+		// its next stop can come before this runs again, and must still
+		// count as one.
+		if (was_stopped)
+			was_stopped = machine && (machine->debug_flags & DEBUG_FLAG_ENABLED) && machine->debugger().cpu().is_stopped();
 		in_service = false;
 	}
 
@@ -583,9 +589,22 @@ int fngo_mame_archive_read(const char *path, const char *exts, uint8_t **data, u
 	*data = nullptr;
 	*size = 0;
 
-	util::archive_file::ptr archive;
-	if (!util::archive_file::open_zip(path, archive) || !util::archive_file::open_7z(path, archive))
+	// MAME's own file layer: UTF-8 paths on every OS
+	std::vector<uint8_t> bytes;
+	if (util::core_file::load(path, bytes) || bytes.empty() || bytes.size() > 64 * 1024 * 1024)
+		return -1;
+
+	// an archive by its signature, not its name (a .zip renamed .a78 still
+	// unpacks; an .a78 is never mistaken for one)
+	static uint8_t const zip_magic[] = { 'P', 'K', 0x03, 0x04 };
+	static uint8_t const sevenz_magic[] = { '7', 'z', 0xBC, 0xAF, 0x27, 0x1C };
+	bool const is_zip = bytes.size() >= sizeof zip_magic && !std::memcmp(bytes.data(), zip_magic, sizeof zip_magic);
+	bool const is_7z = bytes.size() >= sizeof sevenz_magic && !std::memcmp(bytes.data(), sevenz_magic, sizeof sevenz_magic);
+	if (is_zip || is_7z)
 	{
+		util::archive_file::ptr archive;
+		if (is_zip ? util::archive_file::open_zip(path, archive) : util::archive_file::open_7z(path, archive))
+			return -1;
 		for (int i = archive->first_file(); i >= 0; i = archive->next_file())
 		{
 			if (archive->current_is_directory() || !name_matches(archive->current_name(), exts))
@@ -610,17 +629,6 @@ int fngo_mame_archive_read(const char *path, const char *exts, uint8_t **data, u
 	}
 
 	// not an archive: the file itself
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return -1;
-	std::vector<uint8_t> bytes;
-	uint8_t chunk[65536];
-	size_t n;
-	while ((n = fread(chunk, 1, sizeof chunk, f)) > 0 && bytes.size() <= 64 * 1024 * 1024)
-		bytes.insert(bytes.end(), chunk, chunk + n);
-	fclose(f);
-	if (bytes.empty())
-		return -1;
 	auto *buffer = static_cast<uint8_t *>(std::malloc(bytes.size()));
 	if (!buffer)
 		return -1;

@@ -185,9 +185,10 @@ FNGO_API int fngo_mame_plan(const uint8_t *image, uint32_t size, const char *map
 /* The built-in CONFIG (no .a78 header). */
 FNGO_API const uint8_t *fngo_mame_config_rom(uint32_t *size);
 
-/* The first member of a .zip or .7z whose name ends in one of `exts`
- * (";"-separated, e.g. ".a78;.bin"), or, if `path` is not an archive, the
- * file itself. 0 and *data (free with fngo_mame_free) on success. */
+/* The first member of a .zip or .7z (told by its signature, whatever its
+ * name) whose name ends in one of `exts` (";"-separated, e.g. ".a78;.bin"),
+ * or, if `path` is not an archive, the file itself. Paths are UTF-8. 0 and
+ * *data (free with fngo_mame_free) on success. */
 FNGO_API int fngo_mame_archive_read(const char *path, const char *exts, uint8_t **data, uint32_t *size,
                                     char *name, int name_size);
 FNGO_API void fngo_mame_free(void *p);
