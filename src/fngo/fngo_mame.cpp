@@ -20,8 +20,12 @@
 #include "bus/a7800/a78map.h"
 #include "bus/a7800/fujinet_host.h"
 
+#include "debug/debugbuf.h"
 #include "debug/debugcon.h"
 #include "debug/debugcpu.h"
+#include "debug/express.h"
+#include "debug/points.h"
+#include "debug/textbuf.h"
 #include "debug/debugvw.h"
 #include "debug/dvdisasm.h"
 #include "debug/dvmemory.h"
@@ -975,4 +979,299 @@ uint64_t fngo_mame_frame_number(fngo_mame *m)
 double fngo_mame_time(fngo_mame *m)
 {
 	return m->machine ? m->machine->time().as_double() : 0.0;
+}
+
+
+/*-------------------------------------------------
+    the debugger's engine
+-------------------------------------------------*/
+
+namespace {
+
+cpu_device *main_cpu(fngo_mame *m)
+{
+	if (!m || !m->machine)
+		return nullptr;
+	return dynamic_cast<cpu_device *>(m->machine->root_device().subdevice("maincpu"));
+}
+
+const device_state_entry *state_entry(cpu_device *cpu, const char *symbol)
+{
+	for (auto const &entry : cpu->state_entries())
+		if (!core_stricmp(entry->symbol(), symbol))
+			return entry.get();
+	return nullptr;
+}
+
+uint32_t state_value(cpu_device *cpu, const char *symbol)
+{
+	const device_state_entry *entry = state_entry(cpu, symbol);
+	return entry ? uint32_t(cpu->state_int(entry->index())) : 0;
+}
+
+} // anonymous namespace
+
+int fngo_mame_cpu_get(fngo_mame *m, fngo_mame_cpu *out)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !out)
+		return -1;
+	*out = fngo_mame_cpu();
+	out->pc = uint32_t(cpu->state_int(STATE_GENPC));
+	out->a = state_value(cpu, "A");
+	out->x = state_value(cpu, "X");
+	out->y = state_value(cpu, "Y");
+	out->p = state_value(cpu, "P");
+	out->sp = state_value(cpu, "SP");
+	out->cycles = cpu->total_cycles();
+	if (screen_device *screen = screen_device_enumerator(m->machine->root_device()).first())
+	{
+		out->beam_x = screen->hpos();
+		out->beam_y = screen->vpos();
+		out->frame = screen->frame_number();
+	}
+	return 0;
+}
+
+int fngo_mame_cpu_set(fngo_mame *m, int reg, uint32_t value)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu)
+		return -1;
+	static const char *const symbols[] = { "PC", "A", "X", "Y", "P", "SP" };
+	if (reg < 0 || reg >= int(std::size(symbols)))
+		return -1;
+	if (reg == FNGO_REG_PC)
+	{
+		cpu->set_state_int(STATE_GENPC, value);
+		m->machine->debug_view().update_all();
+		return 0;
+	}
+	const device_state_entry *entry = state_entry(cpu, symbols[reg]);
+	if (!entry)
+		return -1;
+	cpu->set_state_int(entry->index(), value);
+	m->machine->debug_view().update_all();
+	return 0;
+}
+
+int fngo_mame_disassemble(fngo_mame *m, uint32_t address, char *text, int text_size, uint8_t *bytes)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return 0;
+	debug_disasm_buffer buffer(*cpu);
+	std::string instruction;
+	offs_t next_pc, size;
+	u32 info;
+	auto dis = m->machine->disable_side_effects();
+	buffer.disassemble(address & 0xffff, instruction, next_pc, size, info);
+	copy_cstr(text, text_size, instruction);
+	if (bytes && size)
+	{
+		std::vector<u8> data;
+		buffer.data_get(address & 0xffff, size, true, data);
+		for (size_t i = 0; i < data.size() && i < 8; i++)
+			bytes[i] = data[i];
+	}
+	return int(size);
+}
+
+int fngo_mame_bp_set(fngo_mame *m, uint32_t address, const char *condition)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return -1;
+	if (condition && *condition)
+	{
+		try
+		{
+			parsed_expression expr(cpu->debug()->symtable(), condition);
+		}
+		catch (expression_error const &)
+		{
+			return -1;
+		}
+	}
+	int const index = cpu->debug()->breakpoint_set(address, (condition && *condition) ? condition : nullptr);
+	m->machine->debug_view().update_all();
+	return index;
+}
+
+int fngo_mame_bp_clear(fngo_mame *m, int index)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return -1;
+	bool const ok = cpu->debug()->breakpoint_clear(index);
+	m->machine->debug_view().update_all();
+	return ok ? 0 : -1;
+}
+
+int fngo_mame_bp_enable(fngo_mame *m, int index, int enabled)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return -1;
+	bool const ok = cpu->debug()->breakpoint_enable(index, enabled != 0);
+	m->machine->debug_view().update_all();
+	return ok ? 0 : -1;
+}
+
+int fngo_mame_bp_list(fngo_mame *m, fngo_mame_bp *out, int max)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return 0;
+	int n = 0;
+	for (auto const &entry : cpu->debug()->breakpoint_list())
+	{
+		const debug_breakpoint &bp = *entry.second;
+		if (out && n < max)
+		{
+			out[n].index = bp.index();
+			out[n].enabled = bp.enabled() ? 1 : 0;
+			out[n].address = bp.address();
+			copy_cstr(out[n].condition, sizeof out[n].condition, bp.condition() ? bp.condition() : "");
+		}
+		n++;
+	}
+	return n;
+}
+
+int fngo_mame_wp_set(fngo_mame *m, int type, uint32_t address, uint32_t length, const char *condition)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m) || !(type & (FNGO_WP_READ | FNGO_WP_WRITE)))
+		return -1;
+	if (condition && *condition)
+	{
+		try
+		{
+			parsed_expression expr(cpu->debug()->symtable(), condition);
+		}
+		catch (expression_error const &)
+		{
+			return -1;
+		}
+	}
+	read_or_write rw = (type & FNGO_WP_READ) && (type & FNGO_WP_WRITE) ? read_or_write::READWRITE
+			: (type & FNGO_WP_WRITE) ? read_or_write::WRITE : read_or_write::READ;
+	int const index = cpu->debug()->watchpoint_set(cpu->space(AS_PROGRAM), rw, address, length ? length : 1,
+			(condition && *condition) ? condition : nullptr);
+	m->machine->debug_view().update_all();
+	return index;
+}
+
+int fngo_mame_wp_clear(fngo_mame *m, int index)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return -1;
+	bool const ok = cpu->debug()->watchpoint_clear(index);
+	m->machine->debug_view().update_all();
+	return ok ? 0 : -1;
+}
+
+int fngo_mame_wp_enable(fngo_mame *m, int index, int enabled)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return -1;
+	bool const ok = cpu->debug()->watchpoint_enable(index, enabled != 0);
+	m->machine->debug_view().update_all();
+	return ok ? 0 : -1;
+}
+
+int fngo_mame_wp_list(fngo_mame *m, fngo_mame_wp *out, int max)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return 0;
+	int n = 0;
+	for (auto const &wp : cpu->debug()->watchpoint_vector(AS_PROGRAM))
+	{
+		if (out && n < max)
+		{
+			out[n].index = wp->index();
+			out[n].enabled = wp->enabled() ? 1 : 0;
+			out[n].type = (wp->type() == read_or_write::READ ? FNGO_WP_READ
+					: wp->type() == read_or_write::WRITE ? FNGO_WP_WRITE
+					: FNGO_WP_READ | FNGO_WP_WRITE);
+			out[n].address = wp->address();
+			out[n].length = wp->length();
+			copy_cstr(out[n].condition, sizeof out[n].condition, wp->condition() ? wp->condition() : "");
+		}
+		n++;
+	}
+	return n;
+}
+
+void fngo_mame_debug_run_to(fngo_mame *m, uint32_t address)
+{
+	if (!have_debugger(m))
+		return;
+	if (device_t *cpu = visible_cpu(m))
+		cpu->debug()->go(address);
+	m->wake();
+}
+
+void fngo_mame_debug_frame(fngo_mame *m)
+{
+	if (!have_debugger(m))
+		return;
+	if (device_t *cpu = visible_cpu(m))
+		cpu->debug()->go_vblank();
+	m->wake();
+}
+
+int fngo_mame_write(fngo_mame *m, uint32_t address, uint8_t value)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu)
+		return -1;
+	address_space &space = cpu->space(AS_PROGRAM);
+	{
+		auto dis = m->machine->disable_side_effects();
+		space.write_byte(address & space.addrmask(), value);
+	}
+	if (have_debugger(m))
+		m->machine->debug_view().update_all();
+	return 0;
+}
+
+int fngo_mame_console_text(fngo_mame *m, uint32_t *seq, char *dst, int size)
+{
+	if (!have_debugger(m) || !seq || !dst || size <= 0)
+		return 0;
+	text_buffer &text = m->machine->debugger().console().get_console_textbuf();
+	u32 const lines = text_buffer_num_lines(text);
+	int used = 0;
+	dst[0] = '\0';
+	for (u32 i = 0; i < lines; i++)
+	{
+		u32 const number = text_buffer_line_index_to_seqnum(text, i);
+		if (*seq && number <= *seq)
+			continue;
+		const char *line = text_buffer_get_seqnum_line(text, number);
+		if (!line)
+			continue;
+		int const len = int(std::strlen(line));
+		if (used + len + 2 > size)
+			break;
+		std::memcpy(dst + used, line, size_t(len));
+		used += len;
+		dst[used++] = '\n';
+		dst[used] = '\0';
+		*seq = number;
+	}
+	return used;
+}
+
+int fngo_mame_symbol_add(fngo_mame *m, const char *name, uint32_t value)
+{
+	if (!have_debugger(m) || !name || !*name)
+		return -1;
+	m->machine->debugger().cpu().global_symtable().add(name, u64(value));
+	return 0;
 }

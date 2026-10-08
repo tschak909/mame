@@ -214,6 +214,58 @@ enum { FNGO_STEP_INTO = 0, FNGO_STEP_OVER, FNGO_STEP_OUT };
 FNGO_API void fngo_mame_debug_step(fngo_mame *m, int kind);
 FNGO_API int fngo_mame_debug_stopped(fngo_mame *m);
 
+/* The engine underneath, for a structured debugger window. */
+typedef struct {
+    uint32_t pc, a, x, y, p, sp;
+    uint64_t cycles;             /* CPU cycles since power-on */
+    int beam_x, beam_y;          /* where the screen's beam is */
+    uint64_t frame;
+} fngo_mame_cpu;
+FNGO_API int fngo_mame_cpu_get(fngo_mame *m, fngo_mame_cpu *out);
+enum { FNGO_REG_PC = 0, FNGO_REG_A, FNGO_REG_X, FNGO_REG_Y, FNGO_REG_P, FNGO_REG_SP };
+FNGO_API int fngo_mame_cpu_set(fngo_mame *m, int reg, uint32_t value);
+
+/* One instruction: its text ("lda $1234,x"), its length in bytes (and the
+ * bytes, up to 8). Returns the length, 0 if none. */
+FNGO_API int fngo_mame_disassemble(fngo_mame *m, uint32_t address, char *text, int text_size, uint8_t *bytes);
+
+typedef struct {
+    int index;
+    int enabled;
+    uint32_t address;
+    char condition[128];
+} fngo_mame_bp;
+/* An execute breakpoint: its index, or -1 (a condition that does not parse). */
+FNGO_API int fngo_mame_bp_set(fngo_mame *m, uint32_t address, const char *condition);
+FNGO_API int fngo_mame_bp_clear(fngo_mame *m, int index);
+FNGO_API int fngo_mame_bp_enable(fngo_mame *m, int index, int enabled);
+FNGO_API int fngo_mame_bp_list(fngo_mame *m, fngo_mame_bp *out, int max);
+
+enum { FNGO_WP_READ = 1, FNGO_WP_WRITE = 2 };
+typedef struct {
+    int index;
+    int enabled;
+    int type;                    /* FNGO_WP_* bits */
+    uint32_t address, length;
+    char condition[128];
+} fngo_mame_wp;
+FNGO_API int fngo_mame_wp_set(fngo_mame *m, int type, uint32_t address, uint32_t length, const char *condition);
+FNGO_API int fngo_mame_wp_clear(fngo_mame *m, int index);
+FNGO_API int fngo_mame_wp_enable(fngo_mame *m, int index, int enabled);
+FNGO_API int fngo_mame_wp_list(fngo_mame *m, fngo_mame_wp *out, int max);
+
+/* Run until the PC reaches `address` / to the next VBLANK. */
+FNGO_API void fngo_mame_debug_run_to(fngo_mame *m, uint32_t address);
+FNGO_API void fngo_mame_debug_frame(fngo_mame *m);
+/* A debugger edit of the 6502's program space (RAM takes it). */
+FNGO_API int fngo_mame_write(fngo_mame *m, uint32_t address, uint8_t value);
+/* The debugger console's lines after line number *seq ("\n"-separated, the
+ * oldest first); *seq advances to the newest. Start from 0. Returns the
+ * length written. */
+FNGO_API int fngo_mame_console_text(fngo_mame *m, uint32_t *seq, char *dst, int size);
+/* A symbol for the debugger's expressions (labels from a symbol file). */
+FNGO_API int fngo_mame_symbol_add(fngo_mame *m, const char *name, uint32_t value);
+
 /* MAME's debug views, as text grids. */
 enum {
     FNGO_VIEW_CONSOLE = 1,
