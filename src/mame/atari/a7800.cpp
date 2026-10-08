@@ -109,6 +109,7 @@
 #include "sound/tiaintf.h"
 
 #include "emupal.h"
+#include "romload.h"
 #include "screen.h"
 #include "softlist_dev.h"
 #include "speaker.h"
@@ -162,6 +163,7 @@ protected:
 	bool m_ctrl_lock = false;
 	uint8_t m_ctrl_reg = 0;
 	bool m_maria_flag = false;
+	bool m_bios_none = false;   // the "none" BIOS: nothing to map in
 	bool m_p1_one_button = true;
 	bool m_p2_one_button = true;
 
@@ -277,7 +279,7 @@ void a7800_state::tia_w(offs_t offset, uint8_t data)
 		{
 			m_ctrl_lock = BIT(data, 0);
 			m_ctrl_reg = data;
-			if (BIT(m_ctrl_reg, 2))
+			if (BIT(m_ctrl_reg, 2) || m_bios_none)
 				m_bios_view.disable();
 			else
 				m_bios_view.select(0);
@@ -1359,6 +1361,14 @@ void a7800_state::machine_start()
 	save_item(NAME(m_ctrl_reg));
 	save_item(NAME(m_maria_flag));
 
+	// The "none" BIOS loads nothing: the console comes up as the BIOS leaves
+	// it for a 7800 cartridge, and the CPU takes the cartridge's own reset
+	// vector (machine_reset).
+	m_bios_none = false;
+	for (const romload::system_bios &bios : romload::system_bioses(rom_region()))
+		if (bios.get_value() == system_bios())
+			m_bios_none = !strcmp(bios.get_name(), "none");
+
 	// install additional handlers, if needed
 	if (m_cart->exists())
 	{
@@ -1394,9 +1404,19 @@ void a7800_state::machine_start()
 void a7800_state::machine_reset()
 {
 	m_ctrl_lock = false;
-	m_ctrl_reg = 0;
 	m_maria_flag = false;
-	m_bios_view.select(0);
+	if (m_bios_none)
+	{
+		// MARIA on, the BIOS off, INPTCTRL unlocked: what the BIOS leaves
+		// behind when it starts a 7800 cartridge
+		m_ctrl_reg = 0x06;
+		m_bios_view.disable();
+	}
+	else
+	{
+		m_ctrl_reg = 0;
+		m_bios_view.select(0);
+	}
 }
 
 void a7800_state::a7800_common(machine_config &config, uint32_t clock)
@@ -1469,11 +1489,14 @@ ROM_START( a7800 )
 	ROMX_LOAD("7800.u7", 0x3000, 0x1000, CRC(5d13730c) SHA1(d9d134bb6b36907c615a594cc7688f7bfcef5b43), ROM_BIOS(0))
 	ROM_SYSTEM_BIOS( 1, "a7800pr", "Atari 7800 (prototype with Asteroids)" ) // TODO: is this really a prototype? notice the ROM code is almost the same as the released PAL version
 	ROMX_LOAD("c300558-001a.u7", 0x0000, 0x4000, CRC(a0e10edf) SHA1(14584b1eafe9721804782d4b1ac3a4a7313e455f), ROM_BIOS(1))
+	ROM_SYSTEM_BIOS( 2, "none", "No BIOS (the cartridge boots directly)" )
 ROM_END
 
 ROM_START( a7800p )
 	ROM_REGION(0x4000, "maincpu", ROMREGION_ERASEFF)
-	ROM_LOAD("c300558-001b.u7", 0x0000, 0x4000, CRC(d5b61170) SHA1(5a140136a16d1d83e4ff32a19409ca376a8df874))
+	ROM_SYSTEM_BIOS( 0, "a7800p", "Atari 7800 (PAL)" )
+	ROMX_LOAD("c300558-001b.u7", 0x0000, 0x4000, CRC(d5b61170) SHA1(5a140136a16d1d83e4ff32a19409ca376a8df874), ROM_BIOS(0))
+	ROM_SYSTEM_BIOS( 1, "none", "No BIOS (the cartridge boots directly)" )
 ROM_END
 
 
