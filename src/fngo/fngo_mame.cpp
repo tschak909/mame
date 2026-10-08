@@ -42,6 +42,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -357,6 +358,12 @@ int fngo_mame_run(fngo_mame *m)
 		o.set_value(OPTION_BIOS, bios, OPTION_PRIORITY_CMDLINE);
 		if (!rompath.empty())
 			o.set_value(OPTION_MEDIAPATH, rompath, OPTION_PRIORITY_CMDLINE);
+
+		// The host owns every setting (controllers, switches, volumes) and
+		// applies them to each machine; whatever MAME saved from the last one
+		// must not come back underneath them, so its cfg files go.
+		for (const char *name : { "default.cfg", "a7800.cfg", "a7800p.cfg" })
+			std::remove((std::string(o.cfg_directory()) + PATH_SEPARATOR + name).c_str());
 
 		m->reset_requested = -1;
 		{

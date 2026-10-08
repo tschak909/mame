@@ -129,6 +129,8 @@ public:
 		m_io_joysticks(*this, "JOYSTICKS"),
 		m_io_buttons(*this, "BUTTONS"),
 		m_io_console_buttons(*this, "CONSOLE"),
+		m_io_controllers(*this, "CONTROLLERS"),
+		m_io_lightgun(*this, { "LIGHTGUN1_X", "LIGHTGUN1_Y", "LIGHTGUN2_X", "LIGHTGUN2_Y" }),
 		m_cart(*this, "cartslot"),
 		m_screen(*this, "screen"),
 		m_bios_view(*this, "bios_view")
@@ -149,6 +151,10 @@ protected:
 	TIMER_DEVICE_CALLBACK_MEMBER(interrupt);
 	TIMER_CALLBACK_MEMBER(maria_startdma);
 	uint8_t riot_joystick_r();
+	int port_type(int port) const { return (m_io_controllers->read() >> (2 * port)) & 3; }
+	uint8_t fire_r(int port);
+	bool lightgun_sees_beam(int port);
+	void lightgun_access_penalty();
 	uint8_t riot_console_button_r();
 	void riot_button_pullup_w(uint8_t data);
 	void dma_wait_cb(uint64_t data);
@@ -164,6 +170,9 @@ protected:
 	uint8_t m_ctrl_reg = 0;
 	bool m_maria_flag = false;
 	bool m_bios_none = false;   // the "none" BIOS: nothing to map in
+
+	// what each controller port has (the CONTROLLERS configuration)
+	enum { CTRL_PROLINE = 0, CTRL_JOY2600, CTRL_LIGHTGUN, CTRL_NONE };
 	bool m_p1_one_button = true;
 	bool m_p2_one_button = true;
 
@@ -176,6 +185,9 @@ protected:
 	required_ioport m_io_joysticks;
 	required_ioport m_io_buttons;
 	required_ioport m_io_console_buttons;
+	required_ioport m_io_controllers;
+	required_ioport_array<4> m_io_lightgun;     // 1X, 1Y, 2X, 2Y
+	uint8_t m_tia_access = 0;
 	required_device<a78_cart_slot_device> m_cart;
 	required_device<screen_device> m_screen;
 	memory_view m_bios_view;
@@ -208,7 +220,27 @@ protected:
 // RIOT
 uint8_t a7800_state::riot_joystick_r()
 {
-	return m_io_joysticks->read();
+	uint8_t data = m_io_joysticks->read();
+
+	for (int port = 0; port < 2; port++)
+	{
+		int const shift = port ? 0 : 4;     // the left port is the high nibble
+		switch (port_type(port))
+		{
+		case CTRL_LIGHTGUN:
+			// The XG-1's trigger is on the Up line, high while it is pulled;
+			// nothing drives the other lines (Atari 7800 Software Guide, as the
+			// A7800 emulator wires it).
+			data = (data & ~(0x0f << shift)) | ((BIT(m_io_buttons->read(), port ? 2 : 3) ? 0x0f : 0x0e) << shift);
+			break;
+		case CTRL_NONE:
+			data |= 0x0f << shift;
+			break;
+		default:
+			break;
+		}
+	}
+	return data;
 }
 
 uint8_t a7800_state::riot_console_button_r()
@@ -223,8 +255,71 @@ void a7800_state::riot_button_pullup_w(uint8_t data)
 	m_p2_one_button = BIT(data, 4);
 }
 
+// The XG-1 light gun. The game races the beam, polling the gun's photodiode
+// on INPT4/INPT5 (low while it sees light) to learn where it points. The aim
+// is in frame pixels (the visible area's top left is 0,0). The diode and the
+// polling see the beam late; this places the sensing point as the A7800
+// emulator (a MAME derivative, BSD-3-Clause) calibrated it against the light
+// gun games: 95 half color clocks to the right, wrapped within the line, and
+// a vertical scale of 228/243 (NTSC) or 260/293 (PAL) from line 16, and the
+// sensor answers within 8 units (half clocks, lines) of that point.
+bool a7800_state::lightgun_sees_beam(int port)
+{
+	int const aim_x = m_io_lightgun[port * 2]->read();
+	int const aim_y = m_io_lightgun[port * 2 + 1]->read() + m_screen->visible_area().top();
+
+	int const sense_x = (aim_x / 2 + 95) % 227;
+	int const sense_y = m_ispal ? 24 + (aim_y - 16) * 260 / 293 : 16 + (aim_y - 16) * 228 / 243;
+
+	int const dx = m_screen->hpos() / 2 - sense_x;
+	int const dy = (m_screen->vpos() % m_lines) - sense_y;
+	return dx * dx + dy * dy < 64;
+}
+
+// The 7800 slows its 6502 to 1.19 MHz for a TIA access, which MAME does not
+// model. A light gun game's position math counts its polling loop's cycles,
+// so with a gun attached every second TIA access costs one more cycle (as
+// the A7800 emulator does). Other games keep MAME's timing exactly.
+void a7800_state::lightgun_access_penalty()
+{
+	if (machine().side_effects_disabled() || (port_type(0) != CTRL_LIGHTGUN && port_type(1) != CTRL_LIGHTGUN))
+		return;
+	if (++m_tia_access == 2)
+	{
+		m_tia_access = 0;
+		m_maincpu->adjust_icount(-1);
+	}
+}
+
+// Pin 6, the 2600-style fire line, as INPT4 (left) / INPT5 (right) see it.
+uint8_t a7800_state::fire_r(int port)
+{
+	uint8_t const buttons = m_io_buttons->read();
+	bool const button1 = BIT(buttons, port ? 2 : 3);
+	bool const button2 = BIT(buttons, port ? 0 : 1);
+
+	switch (port_type(port))
+	{
+	case CTRL_JOY2600:
+		return button1 ? 0x00 : 0x80;
+	case CTRL_LIGHTGUN:
+		return lightgun_sees_beam(port) ? 0x00 : 0x80;
+	case CTRL_NONE:
+		return 0x80;
+	default:
+		// a ProLine's buttons reach pin 6 only in one-button mode
+		return ((button1 || button2) && (port ? m_p2_one_button : m_p1_one_button)) ? 0x00 : 0x80;
+	}
+}
+
 uint8_t a7800_state::tia_r(offs_t offset)
 {
+	lightgun_access_penalty();
+
+	// only a ProLine has the second pair of buttons (on the pot lines)
+	if ((offset & 0x0f) >= 0x08 && (offset & 0x0f) <= 0x0b && port_type((offset & 0x0f) >= 0x0a ? 1 : 0) != CTRL_PROLINE)
+		return 0x00;
+
 	switch (offset & 0x0f)
 	{
 	case 0x00:
@@ -247,15 +342,9 @@ uint8_t a7800_state::tia_r(offs_t offset)
 	case 0x0b:
 		return ((m_io_buttons->read() & 0x04) << 5);
 	case 0x0c:
-		if (((m_io_buttons->read() & 0x08) || (m_io_buttons->read() & 0x02)) && m_p1_one_button)
-			return 0x00;
-		else
-			return 0x80;
+		return fire_r(0);
 	case 0x0d:
-		if (((m_io_buttons->read() & 0x01) || (m_io_buttons->read() & 0x04)) && m_p2_one_button)
-			return 0x00;
-		else
-			return 0x80;
+		return fire_r(1);
 	default:
 		if (!machine().side_effects_disabled())
 			logerror("undefined TIA read %x\n",offset);
@@ -266,6 +355,8 @@ uint8_t a7800_state::tia_r(offs_t offset)
 // TIA
 void a7800_state::tia_w(offs_t offset, uint8_t data)
 {
+	lightgun_access_penalty();
+
 	if (offset < 0x20)
 	{ //INPTCTRL covers TIA registers 0x00-0x1F until locked
 		if (BIT(data, 0))
@@ -388,6 +479,28 @@ static INPUT_PORTS_START( a7800 )
 	PORT_DIPNAME(0x80, 0x80, "Right Difficulty Switch")
 	PORT_DIPSETTING(0x80, "A - Right Position" )
 	PORT_DIPSETTING(0x00, "B - Left Position" )
+
+	PORT_START("CONTROLLERS")
+	PORT_CONFNAME(0x03, 0x00, "Left Controller")
+	PORT_CONFSETTING(0x00, "ProLine Joystick")
+	PORT_CONFSETTING(0x01, "2600 Joystick")
+	PORT_CONFSETTING(0x02, "XG-1 Light Gun")
+	PORT_CONFSETTING(0x03, "None")
+	PORT_CONFNAME(0x0c, 0x00, "Right Controller")
+	PORT_CONFSETTING(0x00, "ProLine Joystick")
+	PORT_CONFSETTING(0x04, "2600 Joystick")
+	PORT_CONFSETTING(0x08, "XG-1 Light Gun")
+	PORT_CONFSETTING(0x0c, "None")
+
+	// the light guns' aim, in frame pixels; the trigger is Button 1
+	PORT_START("LIGHTGUN1_X")
+	PORT_BIT(0x1ff, 160, IPT_LIGHTGUN_X) PORT_MINMAX(0, 319) PORT_SENSITIVITY(50) PORT_KEYDELTA(10) PORT_PLAYER(1) PORT_CONDITION("CONTROLLERS", 0x03, EQUALS, 0x02)
+	PORT_START("LIGHTGUN1_Y")
+	PORT_BIT(0x1ff, 112, IPT_LIGHTGUN_Y) PORT_MINMAX(0, 299) PORT_SENSITIVITY(50) PORT_KEYDELTA(10) PORT_PLAYER(1) PORT_CONDITION("CONTROLLERS", 0x03, EQUALS, 0x02)
+	PORT_START("LIGHTGUN2_X")
+	PORT_BIT(0x1ff, 160, IPT_LIGHTGUN_X) PORT_MINMAX(0, 319) PORT_SENSITIVITY(50) PORT_KEYDELTA(10) PORT_PLAYER(2) PORT_CONDITION("CONTROLLERS", 0x0c, EQUALS, 0x08)
+	PORT_START("LIGHTGUN2_Y")
+	PORT_BIT(0x1ff, 112, IPT_LIGHTGUN_Y) PORT_MINMAX(0, 299) PORT_SENSITIVITY(50) PORT_KEYDELTA(10) PORT_PLAYER(2) PORT_CONDITION("CONTROLLERS", 0x0c, EQUALS, 0x08)
 INPUT_PORTS_END
 
 /***************************************************************************
@@ -1360,6 +1473,7 @@ void a7800_state::machine_start()
 	save_item(NAME(m_ctrl_lock));
 	save_item(NAME(m_ctrl_reg));
 	save_item(NAME(m_maria_flag));
+	save_item(NAME(m_tia_access));
 
 	// The "none" BIOS loads nothing: the console comes up as the BIOS leaves
 	// it for a 7800 cartridge, and the CPU takes the cartridge's own reset
