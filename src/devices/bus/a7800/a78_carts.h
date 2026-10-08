@@ -9,9 +9,12 @@
 #include "xboard.h"
 #include "hiscore.h"
 #include "cpuwiz.h"
+#include "fujinet.h"
 
 static void a7800_cart(device_slot_interface &device)
 {
+	// FujiNet cartridge (pico/atari-7800 in fujinet-firmware): selectable
+	device.option_add("fujinet",      A78_FUJINET);
 	device.option_add_internal("a78_rom",      A78_ROM);
 	device.option_add_internal("a78_pokey",    A78_ROM_POKEY);
 	device.option_add_internal("a78_sg",       A78_ROM_SG);
