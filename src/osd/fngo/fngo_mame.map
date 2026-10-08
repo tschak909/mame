@@ -1,0 +1,7 @@
+/* libmame_fngo exports only its C API (src/fngo/fngo_mame.h). */
+{
+	global:
+		fngo_mame_*;
+	local:
+		*;
+};

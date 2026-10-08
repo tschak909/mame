@@ -1206,6 +1206,9 @@ end
 end
 
 
+-- The fngo OSD (FujiNet Go) renders nothing itself: no bgfx.
+if _OPTIONS["osd"] ~= "fngo" then
+
 --------------------------------------------------
 -- BX library objects
 --------------------------------------------------
@@ -1607,6 +1610,8 @@ end
 			"-D BGFX_CONFIG_MULTITHREADED=0",
 		}
 	end
+
+end -- osd ~= fngo
 
 
 --------------------------------------------------
