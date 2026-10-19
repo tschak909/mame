@@ -162,6 +162,14 @@ FNGO_API int fngo_mame_fujinet_status(fngo_mame_cart_status *out);
  * reaches it. */
 FNGO_API uint32_t fngo_mame_fujinet_latest(void);
 
+/* Every SLIP-framed FujiBus frame on the cartridge's link to fujinet-pc,
+ * as sent (dir 1: the console to FujiNet) or received (dir 0), on the
+ * cartridge's worker thread. One hook for the process, kept across
+ * machines; NULL stops it, and once that call returns the old hook is not
+ * running and will not run again. */
+typedef void (*fngo_mame_fujinet_trace_fn)(void *user, int dir, const uint8_t *raw, size_t len);
+FNGO_API void fngo_mame_fujinet_trace(fngo_mame_fujinet_trace_fn fn, void *user);
+
 /* ---- images (any thread) --------------------------------------------------- */
 
 typedef struct {

@@ -118,7 +118,27 @@ int64_t ms_since(std::chrono::steady_clock::time_point start)
 	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
 }
 
+// set_trace()'s hook
+std::mutex s_trace_lock;
+a78_fujilink::trace_fn s_trace = nullptr;
+void *s_trace_user = nullptr;
+
+void trace(int dir, const uint8_t *raw, size_t len)
+{
+	std::lock_guard<std::mutex> lock(s_trace_lock);
+	if (s_trace)
+		s_trace(s_trace_user, dir, raw, len);
+}
+
 } // anonymous namespace
+
+
+void a78_fujilink::set_trace(trace_fn fn, void *user)
+{
+	std::lock_guard<std::mutex> lock(s_trace_lock);
+	s_trace = fn;
+	s_trace_user = user;
+}
 
 
 a78_fujilink::~a78_fujilink()
@@ -260,6 +280,7 @@ fb_status_t a78_fujilink::read_frame(size_t &out_len, uint32_t timeout_ms)
 			if (c == 0xc0 && ++ends == 2)
 			{
 				out_len = n;
+				trace(0, m_rx_raw.data(), n);
 				return FB_OK;
 			}
 		}
@@ -297,7 +318,10 @@ fb_status_t a78_fujilink::transact(uint8_t device, uint8_t command, const fb_par
 	if (!req_len)
 		return FB_ETOOBIG;
 
-	if (::send(sock_t(sock), reinterpret_cast<const char *>(m_tx_raw.data()), int(req_len), SEND_FLAGS) != int(req_len))
+	auto const sent = ::send(sock_t(sock), reinterpret_cast<const char *>(m_tx_raw.data()), int(req_len), SEND_FLAGS);
+	if (sent > 0)
+		trace(1, m_tx_raw.data(), size_t(sent));
+	if (sent != int(req_len))
 		return FB_ENOLINK;
 
 	for (;;)
@@ -324,6 +348,10 @@ void a78_fujilink::send_bare(uint8_t device, uint8_t command, const uint8_t *pay
 		return;
 
 	size_t n = fujibus_build_request(device, command, nullptr, 0, payload, payload_len, m_tx_raw.data(), m_tx_raw.size());
-	if (n)
-		::send(sock_t(sock), reinterpret_cast<const char *>(m_tx_raw.data()), int(n), SEND_FLAGS);
+	if (!n)
+		return;
+
+	auto const sent = ::send(sock_t(sock), reinterpret_cast<const char *>(m_tx_raw.data()), int(n), SEND_FLAGS);
+	if (sent > 0)
+		trace(1, m_tx_raw.data(), size_t(sent));
 }

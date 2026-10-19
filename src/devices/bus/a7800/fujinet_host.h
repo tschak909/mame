@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -97,5 +98,10 @@ uint32_t a78_fujinet_latest_instance();
 
 // The baked CONFIG, without the .a78 header.
 const uint8_t *a78_fujinet_config_rom(uint32_t &size);
+
+// Every SLIP frame on the link to fujinet-pc, as sent (dir 1) or received
+// (dir 0), on the cartridge's worker thread; NULL stops it. Once this
+// returns, the old hook is not running and will not run again.
+void a78_fujinet_set_trace(void (*fn)(void *user, int dir, const uint8_t *raw, size_t len), void *user);
 
 #endif // MAME_BUS_A7800_FUJINET_HOST_H

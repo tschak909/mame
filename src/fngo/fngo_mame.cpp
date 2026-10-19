@@ -504,6 +504,11 @@ uint32_t fngo_mame_fujinet_latest(void)
 	return a78_fujinet_latest_instance();
 }
 
+void fngo_mame_fujinet_trace(fngo_mame_fujinet_trace_fn fn, void *user)
+{
+	a78_fujinet_set_trace(fn, user);
+}
+
 
 /*-------------------------------------------------
     images

@@ -53,6 +53,13 @@ public:
 
 	void set_inbound_handler(inbound_handler handler) { m_inbound = handler; }
 
+	// Every frame on the wire, SLIP and all: dir 1 as sent to fujinet-pc, 0
+	// as read from it, on the worker thread. One hook for the process; it
+	// runs under a lock, so once set_trace(nullptr, nullptr) returns the old
+	// hook is not running and will not run again.
+	typedef void (*trace_fn)(void *user, int dir, const uint8_t *raw, size_t len);
+	static void set_trace(trace_fn fn, void *user);
+
 private:
 	// The largest SLIP-encoded frame: a 6-byte header plus a 1K reply
 	// (FUJIMAIL_RX_MAX), doubled for SLIP's worst case, plus two delimiters

@@ -226,6 +226,11 @@ const uint8_t *a78_fujinet_config_rom(uint32_t &size)
 	return _configrom;
 }
 
+void a78_fujinet_set_trace(void (*fn)(void *user, int dir, const uint8_t *raw, size_t len), void *user)
+{
+	a78_fujilink::set_trace(fn, user);
+}
+
 
 /*-------------------------------------------------
     device
