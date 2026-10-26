@@ -371,6 +371,8 @@ void a78_fujinet_device::device_reset()
 {
 	address_space &space = m_cpu->space(AS_PROGRAM);
 
+	pokey_clear();
+
 	// MAME's 7800 gives a stock cart $4000-$FFFF only; the cart's other
 	// ranges are installed here, after the driver's own machine_start.
 	space.install_readwrite_handler(0x0400, 0x047f,
@@ -413,7 +415,7 @@ void a78_fujinet_device::device_reset()
 							flip();
 							fuji_load_event(&m_loader, A78_W_GO_BIOS);
 						}
-						m_pokey->reset();
+						pokey_clear();
 					}
 				}, &m_tap_tia);
 		// Only the PAL BIOS runs from $C000-$EFFF.
@@ -520,6 +522,16 @@ void a78_fujinet_device::device_reset()
 /*-------------------------------------------------
     the modes, as core1 switches them
 -------------------------------------------------*/
+
+// pokey_device::device_reset leaves AUDF/AUDC/AUDCTL/SKCTL alone, so a
+// machine reset would carry a game's tone through to CONFIG.
+void a78_fujinet_device::pokey_clear()
+{
+	m_pokey->reset();
+	for (unsigned reg = 0; reg < 9; reg++)
+		m_pokey->write(reg, 0x00);          // AUDF1-4, AUDC1-4, AUDCTL
+	m_pokey->write(0x0f, 0x00);                 // SKCTL
+}
 
 void a78_fujinet_device::to_boot()
 {
@@ -648,7 +660,7 @@ void a78_fujinet_device::bus_write(uint16_t a, uint8_t data)
 			flip();
 			fuji_load_event(&m_loader, A78_W_GO);
 		}
-		m_pokey->reset();
+		pokey_clear();
 		break;
 	case A78_W_GO_BIOS:
 		m_bus.go_bios = true;

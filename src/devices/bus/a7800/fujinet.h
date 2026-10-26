@@ -85,6 +85,7 @@ private:
 	uint8_t bus_read(uint16_t a);
 	void bus_write(uint16_t a, uint8_t data);
 	uint16_t slot_word(uint16_t a) const;
+	void pokey_clear();
 	void to_boot();
 	void to_load();
 	void flip();
