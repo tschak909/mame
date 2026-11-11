@@ -19,6 +19,7 @@
 
 #include "bus/a7800/a78map.h"
 #include "bus/a7800/fujinet_host.h"
+#include "../mame/atari/maria.h"
 
 #include "debug/debugbuf.h"
 #include "debug/debugcon.h"
@@ -130,6 +131,12 @@ struct fngo_mame : public fngo_osd_host
 	uint64_t frame_no = 0;
 	bool in_service = false;
 	bool was_stopped = false;
+
+	// the family debugger's instruction ring
+	std::vector<fngo_mame_trace_entry> trace_ring;
+	uint32_t trace_head = 0, trace_n = 0;
+	bool trace_on = false;
+	int st_a = -1, st_x = -1, st_y = -1, st_p = -1, st_sp = -1;
 
 	// ---- fngo_osd_host ----
 
@@ -1297,4 +1304,146 @@ int fngo_mame_symbol_add(fngo_mame *m, const char *name, uint32_t value)
 		return -1;
 	m->machine->debugger().cpu().global_symtable().add(name, u64(value));
 	return 0;
+}
+
+
+/*-------------------------------------------------
+    the family debugger's engine (API 2)
+-------------------------------------------------*/
+
+namespace {
+
+void trace_tap(void *user, device_t &device, offs_t pc)
+{
+	fngo_mame *m = static_cast<fngo_mame *>(user);
+	if (m->trace_ring.empty())
+		return;
+	cpu_device &cpu = static_cast<cpu_device &>(device);
+	fngo_mame_trace_entry &e = m->trace_ring[m->trace_head];
+	m->trace_head = (m->trace_head + 1) % FNGO_TRACE_MAX;
+	if (m->trace_n < FNGO_TRACE_MAX)
+		m->trace_n++;
+	e.pc = uint16_t(pc);
+	e.a = uint8_t(cpu.state_int(m->st_a));
+	e.x = uint8_t(cpu.state_int(m->st_x));
+	e.y = uint8_t(cpu.state_int(m->st_y));
+	e.p = uint8_t(cpu.state_int(m->st_p));
+	e.sp = uint8_t(cpu.state_int(m->st_sp));
+	e.cycles = cpu.total_cycles();
+	{
+		address_space &space = cpu.space(AS_PROGRAM);
+		auto dis = m->machine->disable_side_effects();
+		for (int i = 0; i < 3; i++)
+			e.bytes[i] = space.read_byte((pc + i) & space.addrmask());
+	}
+	if (screen_device *screen = screen_device_enumerator(m->machine->root_device()).first())
+	{
+		e.scanline = uint16_t(screen->vpos());
+		e.dot = uint16_t(screen->hpos());
+	}
+	else
+		e.scanline = e.dot = 0;
+}
+
+int state_index(cpu_device *cpu, const char *symbol)
+{
+	const device_state_entry *entry = state_entry(cpu, symbol);
+	return entry ? entry->index() : -1;
+}
+
+} // anonymous namespace
+
+void fngo_mame_trace_enable(fngo_mame *m, int on)
+{
+	cpu_device *cpu = main_cpu(m);
+	if (!cpu || !have_debugger(m))
+		return;
+	if (on)
+	{
+		if (m->trace_ring.empty())
+			m->trace_ring.resize(FNGO_TRACE_MAX);
+		m->st_a = state_index(cpu, "A");
+		m->st_x = state_index(cpu, "X");
+		m->st_y = state_index(cpu, "Y");
+		m->st_p = state_index(cpu, "P");
+		m->st_sp = state_index(cpu, "SP");
+		m->trace_on = true;
+		cpu->debug()->set_instruction_tap(trace_tap, m);
+	}
+	else
+	{
+		m->trace_on = false;
+		cpu->debug()->set_instruction_tap(nullptr, nullptr);
+	}
+}
+
+int fngo_mame_trace_enabled(fngo_mame *m)
+{
+	return m && m->trace_on ? 1 : 0;
+}
+
+void fngo_mame_trace_clear(fngo_mame *m)
+{
+	if (!m)
+		return;
+	m->trace_head = 0;
+	m->trace_n = 0;
+}
+
+int fngo_mame_trace_count(fngo_mame *m)
+{
+	return m ? int(m->trace_n) : 0;
+}
+
+int fngo_mame_trace_read(fngo_mame *m, int first, fngo_mame_trace_entry *out, int max)
+{
+	if (!m || !out || first < 0 || max <= 0 || uint32_t(first) >= m->trace_n)
+		return 0;
+	int n = 0;
+	while (n < max && uint32_t(first + n) < m->trace_n)
+	{
+		const uint32_t idx = (m->trace_head + FNGO_TRACE_MAX - 1 - uint32_t(first + n)) % FNGO_TRACE_MAX;
+		out[n++] = m->trace_ring[idx];
+	}
+	return n;
+}
+
+void fngo_mame_watch_last(fngo_mame *m, uint32_t *address, uint32_t *value, uint32_t *old)
+{
+	uint32_t a = 0, v = 0, o = 0;
+	if (m && m->machine && have_debugger(m))
+	{
+		debugger_cpu &dc = m->machine->debugger().cpu();
+		a = uint32_t(dc.wpaddr());
+		v = uint32_t(dc.wpdata());
+		o = uint32_t(dc.wpold());
+	}
+	if (address) *address = a;
+	if (value) *value = v;
+	if (old) *old = o;
+}
+
+int fngo_mame_maria_capture(fngo_mame *m, fngo_maria_capture *out)
+{
+	if (!m || !m->machine || !out)
+		return 0;
+	atari_maria_device *maria = dynamic_cast<atari_maria_device *>(m->machine->root_device().subdevice("maria"));
+	if (!maria || !maria->capture())
+		return 0;
+	static_assert(sizeof(fngo_maria_line) == sizeof(atari_maria_device::capture_line), "capture layout");
+	std::memcpy(out->lines, maria->capture(), sizeof out->lines);
+	out->ctrl = maria->ctrl();
+	if (screen_device *screen = screen_device_enumerator(m->machine->root_device()).first())
+	{
+		const rectangle &va = screen->visible_area();
+		out->vis_left = va.left();
+		out->vis_top = va.top();
+		out->vis_width = va.width();
+		out->vis_height = va.height();
+		out->total_lines = screen->height();
+		out->vpos = screen->vpos();
+		out->hpos = screen->hpos();
+		out->frame = screen->frame_number();
+	}
+	return 1;
 }

@@ -38,7 +38,7 @@ extern "C" {
 #  define FNGO_API __attribute__((visibility("default")))
 #endif
 
-#define FNGO_MAME_API_VERSION 1
+#define FNGO_MAME_API_VERSION 2
 #define FNGO_MAME_SAMPLE_RATE 48000
 
 typedef struct fngo_mame fngo_mame;
@@ -335,6 +335,60 @@ FNGO_API int fngo_mame_palette(fngo_mame *m, uint32_t *xrgb, int max);
 /* The emulated frame count and the machine's time in seconds. */
 FNGO_API uint64_t fngo_mame_frame_number(fngo_mame *m);
 FNGO_API double fngo_mame_time(fngo_mame *m);
+
+/* ---- the family debugger's engine (API 2) -------------------------------- */
+
+/* The executed-instruction ring: 65536 entries, allocated on first enable.
+ * While it is on, the CPU is hooked on every instruction. */
+typedef struct {
+    uint16_t pc;
+    uint8_t a, x, y, p, sp;
+    uint8_t bytes[3];            /* the instruction's first bytes */
+    uint16_t scanline, dot;
+    uint64_t cycles;
+} fngo_mame_trace_entry;
+#define FNGO_TRACE_MAX 65536
+FNGO_API void fngo_mame_trace_enable(fngo_mame *m, int on);
+FNGO_API int fngo_mame_trace_enabled(fngo_mame *m);
+FNGO_API void fngo_mame_trace_clear(fngo_mame *m);
+/* Entries held (at most FNGO_TRACE_MAX). */
+FNGO_API int fngo_mame_trace_count(fngo_mame *m);
+/* Entries newest first, from index `first` (0 = the newest). Returns how many. */
+FNGO_API int fngo_mame_trace_read(fngo_mame *m, int first, fngo_mame_trace_entry *out, int max);
+
+/* The last watchpoint hit: the address, the value read or being written, and
+ * for a write the byte it replaced. */
+FNGO_API void fngo_mame_watch_last(fngo_mame *m, uint32_t *address, uint32_t *value, uint32_t *old);
+
+/* What MARIA did for each displayed row of the last frames. Row `r` of
+ * `lines` is the screen's scanline r; `vis_*` is the visible area handed to
+ * the frame callback (frame row = scanline - vis_top). */
+#define FNGO_MARIA_LINES 320
+#define FNGO_MARIA_OBJECTS 24
+#define FNGO_MARIA_CELLS 160
+typedef struct {
+    uint16_t header, graphics;
+    uint8_t hpos, width, palette;
+    uint8_t flags;               /* 1 extended header, 2 indirect, 4 write mode */
+} fngo_maria_object;
+typedef struct {
+    uint8_t valid, ctrl, charbase, nobj;
+    uint8_t offset, holey, dli, pad;
+    uint16_t dpp, dll, dl, cycles;
+    uint8_t palette[32];
+    uint8_t cells[FNGO_MARIA_CELLS];
+    fngo_maria_object obj[FNGO_MARIA_OBJECTS];
+} fngo_maria_line;
+typedef struct {
+    int vis_left, vis_top, vis_width, vis_height;
+    int total_lines;
+    int vpos, hpos;
+    uint64_t frame;
+    uint8_t ctrl;                /* the last CTRL written */
+    fngo_maria_line lines[FNGO_MARIA_LINES];
+} fngo_maria_capture;
+/* Returns 1 when filled. Safe only on the emulation thread. */
+FNGO_API int fngo_mame_maria_capture(fngo_mame *m, fngo_maria_capture *out);
 
 #ifdef __cplusplus
 }

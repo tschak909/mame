@@ -162,6 +162,15 @@ public:
 
 	static const int HISTORY_SIZE = 256;
 
+	// fngo: a hook called with every instruction about to execute on this device
+	typedef void (*instruction_tap_func)(void *user, device_t &device, offs_t pc);
+	void set_instruction_tap(instruction_tap_func func, void *user)
+	{
+		m_tap = func;
+		m_tap_user = user;
+		compute_debug_flags();
+	}
+
 	// debugger_cpu helpers
 	void compute_debug_flags();
 
@@ -207,6 +216,9 @@ private:
 	u64                     m_total_cycles;             // current total cycles
 	u64                     m_last_total_cycles;        // last total cycles
 	bool                    m_was_waiting;              // true if no instruction executed since last wait
+
+	instruction_tap_func    m_tap = nullptr;            // fngo: per-instruction tap
+	void *                  m_tap_user = nullptr;
 
 	// history
 	offs_t                  m_pc_history[HISTORY_SIZE]; // history of recent PCs
@@ -403,6 +415,10 @@ public:
 	void set_execution_stopped() { m_execution_state = exec_state::STOPPED; }
 	void set_execution_running() { m_execution_state = exec_state::RUNNING; }
 	void set_wpinfo(offs_t address, u64 data, offs_t size) { m_wpaddr = address; m_wpdata = data; m_wpsize = size; }
+	void set_wpold(u64 old) { m_wpold = old; }  // fngo: the byte a write watchpoint is about to replace
+	u64 wpold() const { return m_wpold; }
+	u64 wpaddr() const { return m_wpaddr; }
+	u64 wpdata() const { return m_wpdata; }
 
 	// device_debug helpers
 	// [TODO] [RH]: Look into this more later, can possibly merge these two classes
@@ -443,6 +459,7 @@ private:
 	u64         m_wpdata;
 	u64         m_wpaddr;
 	u64         m_wpsize;
+	u64         m_wpold = 0;
 	std::unique_ptr<u64[]> m_tempvar;
 
 	osd_ticks_t m_last_periodic_update_time;

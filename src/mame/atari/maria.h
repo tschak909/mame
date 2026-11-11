@@ -28,13 +28,35 @@ public:
 
 	uint32_t screen_update(screen_device &screen, bitmap_ind16 &bitmap, const rectangle &cliprect);
 
+	// fngo: what MARIA did for every displayed row of the last frames, for the debugger's Video tab
+	static constexpr uint32_t LINERAM_SIZE = 160;
+	static constexpr int CAPTURE_LINES = 320;
+	static constexpr int CAPTURE_OBJECTS = 24;
+	struct capture_object
+	{
+		uint16_t header;     // address of the DL header
+		uint16_t graphics;   // its graphics (or character map) address
+		uint8_t hpos, width, palette;
+		uint8_t flags;       // 1 extended header, 2 indirect, 4 write mode
+	};
+	struct capture_line
+	{
+		uint8_t valid, ctrl, charbase, nobj;
+		uint8_t offset, holey, dli, pad;
+		uint16_t dpp, dll, dl, cycles;
+		uint8_t palette[32];
+		uint8_t cells[LINERAM_SIZE];
+		capture_object obj[CAPTURE_OBJECTS];
+	};
+	const capture_line *capture() const { return m_capture.get(); }
+	uint8_t ctrl() const { return m_ctrl; }
+
 protected:
 	// device-level overrides
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
 
 private:
-	static constexpr uint32_t LINERAM_SIZE = 160;
 
 	void draw_scanline();
 	bool is_holey(offs_t addr);
@@ -61,6 +83,9 @@ private:
 	uint8_t m_rm;
 	bool m_dli;
 	uint32_t m_charbase;
+	uint8_t m_ctrl;
+	std::unique_ptr<capture_line []> m_capture;
+	capture_line m_stage, m_shown;   // the DMA being built, and the one on screen
 	bitmap_ind16 m_bitmap;
 
 	required_address_space m_dmaspace;

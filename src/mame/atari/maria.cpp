@@ -124,6 +124,11 @@ void atari_maria_device::device_start()
 	save_item(NAME(m_rm));
 	save_item(NAME(m_dli));
 	save_item(NAME(m_charbase));
+	save_item(NAME(m_ctrl));
+
+	m_capture = make_unique_clear<capture_line []>(CAPTURE_LINES);
+	std::memset(&m_stage, 0, sizeof m_stage);
+	std::memset(&m_shown, 0, sizeof m_shown);
 }
 
 void atari_maria_device::device_reset()
@@ -148,6 +153,7 @@ void atari_maria_device::device_reset()
 	m_bcntl = false;
 	m_kangaroo = false;
 	m_rm = 0;
+	m_ctrl = 0;
 
 	m_dl = 0;
 	m_holey = 0;
@@ -205,6 +211,16 @@ void atari_maria_device::draw_scanline()
 {
 	int cells = 0;
 
+	// fngo: remember this line's DMA; it is displayed on the next call
+	std::memset(&m_stage, 0, sizeof m_stage);
+	m_stage.valid = 1;
+	m_stage.dpp = m_dpp;
+	m_stage.dll = m_dll;
+	m_stage.dl = m_dl;
+	m_stage.offset = m_offset & 0xff;
+	m_stage.holey = m_holey;
+	m_stage.dli = m_dli ? 1 : 0;
+
 	if (m_dmaon)
 	{
 		// All lines in a zone have the same initial DMA startup time. We'll adjust
@@ -226,9 +242,13 @@ void atari_maria_device::draw_scanline()
 		bool ind;
 		while (((read_byte(dl + 1) & 0x5f) != 0) && (maria_cycles < 426))
 		{
+			const uint16_t hdr = dl;
+			bool ext = false;
+
 			/* Extended header */
 			if (!(read_byte(dl + 1) & 0x1f)) // bit 4 also needs to set?
 			{
+				ext = true;
 				graph_adr = (read_byte(dl + 2) << 8) | read_byte(dl);
 				width = ((read_byte(dl + 3) ^ 0xff) & 0x1f) + 1;
 				hpos = read_byte(dl + 4);
@@ -251,6 +271,17 @@ void atari_maria_device::draw_scanline()
 			}
 
 			/*LOGVIDEO("%x DL: ADR=%x  width=%x  hpos=%x  pal=%x  mode=%x  ind=%x\n", screen().vpos(), graph_adr, width, hpos, pal, m_write_mode, ind);*/
+
+			if (m_stage.nobj < CAPTURE_OBJECTS)
+			{
+				capture_object &o = m_stage.obj[m_stage.nobj++];
+				o.header = hdr;
+				o.graphics = graph_adr;
+				o.hpos = hpos;
+				o.width = width;
+				o.palette = pal;
+				o.flags = (ext ? 1 : 0) | (ind ? 2 : 0) | (m_write_mode ? 4 : 0);
+			}
 
 			for (int x = 0; x < width; x++)
 			{
@@ -300,6 +331,8 @@ void atari_maria_device::draw_scanline()
 			if (BIT(read_byte(m_dll + 3), 7))
 				maria_cycles += 17; // interrupt overhead
 		}
+
+		m_stage.cycles = maria_cycles > 0xffff ? 0xffff : maria_cycles;
 
 		// If MARIA used up all of the DMA time then the CPU can't run until next line...
 		if (maria_cycles >= 426)
@@ -354,6 +387,22 @@ void atari_maria_device::draw_scanline()
 			scanline[2 * i] &= 0x0f;
 			scanline[2 * i + 1] &= 0x0f;
 		}
+	}
+
+	// fngo: what produced this row (the DMA of the previous call) and the registers it was drawn with
+	{
+		const int row = screen().vpos();
+		if (m_capture && row >= 0 && row < CAPTURE_LINES)
+		{
+			capture_line &ln = m_capture[row];
+			ln = m_shown;
+			ln.valid = 1;
+			ln.ctrl = m_ctrl;
+			ln.charbase = m_charbase >> 8;
+			std::memcpy(ln.palette, m_maria_palette, sizeof ln.palette);
+			std::memcpy(ln.cells, m_line_ram[m_active_buffer].get(), LINERAM_SIZE);
+		}
+		m_shown = m_stage;
 	}
 
 	for (int i = 0; i < LINERAM_SIZE; i++) // buffer automaticaly cleared once displayed
@@ -478,6 +527,7 @@ void atari_maria_device::write(offs_t offset, uint8_t data)
 			m_charbase = (data << 8);
 			break;
 		case 0x1c:
+			m_ctrl = data;
 			/*LOGCTRL("MARIA CTRL=%x\n",data);*/
 			m_color_kill = BIT(data, 7);
 			switch ((data >> 5) & 3)

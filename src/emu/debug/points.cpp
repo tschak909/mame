@@ -354,6 +354,15 @@ void debug_watchpoint::triggered(read_or_write type, offs_t address, u64 data, u
 	else
 		address += m_space.alignment() - size - address_offset;
 
+	// fngo: the byte a write is about to replace (the tap runs before the store)
+	if (type == read_or_write::WRITE && size == 1 && unit_size == 8)
+	{
+		auto dis = machine.disable_side_effects();
+		debug.cpu().set_wpold(m_space.read_byte(address));
+	}
+	else
+		debug.cpu().set_wpold(data);
+
 	// stash the value that will be written or has just been read
 	debug.cpu().set_wpinfo(address, data, size * unit_size);
 

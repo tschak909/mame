@@ -67,6 +67,9 @@ debugger_cpu::debugger_cpu(running_machine &machine)
 	m_symtable->add("wpaddr", symbol_table::READ_ONLY, &m_wpaddr);
 	m_symtable->add("wpdata", symbol_table::READ_ONLY, &m_wpdata);
 	m_symtable->add("wpsize", symbol_table::READ_ONLY, &m_wpsize);
+	/* fngo: "old" is the byte a write watchpoint is about to replace, "value" the one it writes */
+	m_symtable->add("old", symbol_table::READ_ONLY, &m_wpold);
+	m_symtable->add("value", symbol_table::READ_ONLY, &m_wpdata);
 
 	screen_device_enumerator screen_enumerator = screen_device_enumerator(m_machine.root_device());
 	screen_device_enumerator::iterator iter = screen_enumerator.begin();
@@ -880,6 +883,10 @@ void device_debug::instruction_hook(offs_t curpc)
 		m_was_waiting = false;
 		compute_debug_flags();
 	}
+
+	// fngo: the family debugger's executed-instruction ring
+	if (m_tap != nullptr)
+		m_tap(m_tap_user, m_device, curpc);
 
 	// are we tracking our recent pc visits?
 	if (m_track_pc)
@@ -1859,7 +1866,7 @@ void device_debug::compute_debug_flags()
 		machine.debug_flags |= DEBUG_FLAG_CALL_HOOK;
 
 	// also call if we are tracing
-	if (m_trace != nullptr)
+	if (m_trace != nullptr || m_tap != nullptr)
 		machine.debug_flags |= DEBUG_FLAG_CALL_HOOK;
 
 	// if we are stopping at a particular time and that time is within the current timeslice, we need to be called
