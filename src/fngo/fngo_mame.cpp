@@ -1070,7 +1070,10 @@ int fngo_mame_cpu_set(fngo_mame *m, int reg, uint32_t value)
 		return -1;
 	if (reg == FNGO_REG_PC)
 	{
-		cpu->set_state_int(STATE_GENPC, value);
+		// the "PC" entry is the next instruction to run; GENPC is the one
+		// already fetched, so setting it does nothing on a stopped machine
+		const device_state_entry *pc = state_entry(cpu, "PC");
+		cpu->set_state_int(pc ? pc->index() : int(STATE_GENPC), value);
 		m->machine->debug_view().update_all();
 		return 0;
 	}
